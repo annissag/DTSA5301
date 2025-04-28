@@ -1,0 +1,164 @@
+---
+title: "Johns Hopkins COVID Project"
+author: "anonymous student"
+date: "2025-04-17"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+# Johns Hopkins COVID Project
+
+The data that will be loaded in is data directly provided by Johns Hopkins that looks at the amount of confirmed COVID cases in a time series globally, as well as the amount of cases globally that have recovered in a time series. There is data provided including, but not limited to, the state and regions in which there are cases recorded, as well as dates. For this project, I am interested in seeing if there is a correlation between the confirmed cases and recovered cases over time.
+
+# Get the current data in
+
+```{r}
+# Data for global infections confirmed
+global_inf <- read.csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv")
+
+# Data for global recovery from infections
+global_rec <- read.csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_recovered_global.csv")
+```
+
+# Load libraries and disable warnings.
+
+Note: The TinyTex package will need to be installed prior to running this.
+
+```{r}
+suppressMessages(library(lubridate))
+suppressMessages(library(tinytex))
+suppressMessages(library(tidyverse))
+suppressMessages(library(ggplot2))
+options(warn=-1)
+```
+
+# Change the data into a long format since the dates are listed out as columns. The date format will also be changed.
+
+```{r}
+colnames(global_inf) <- gsub("^X", "", colnames(global_inf))
+colnames(global_rec) <- gsub("^X", "", colnames(global_rec))
+
+global_inf <- global_inf %>%
+  pivot_longer(cols = 5:ncol(global_inf), names_to = "date", values_to = "new_inf") %>%
+  mutate(date = as.Date(date, format = "%m.%d.%y"))
+global_rec <- global_rec %>%
+  pivot_longer(cols = 5:ncol(global_rec), names_to = "date", values_to = "new_rec") %>%
+  mutate(date = as.Date(date, format = "%m.%d.%y"))
+
+```
+
+### We will add up total cases by date.
+
+Since the source cuts off at September 2021 for global recovered cases, we will cut the axis off at this point for an accurate representation. For the first visualization, we are interested in looking at just how many people recovered as a ratio that were infected for each country, therefore date isn't necessary yet.
+
+```{r}
+global_inf <- global_inf %>%
+  group_by(date) %>%
+  summarize(global_inf = sum(new_inf, na.rm = TRUE)) %>%
+  ungroup()
+global_rec <- global_rec %>%
+  group_by(date) %>%
+  summarize(global_rec = sum(new_rec, na.rm = TRUE)) %>%
+  ungroup()
+
+global_inf <- global_inf %>%
+  filter(date <= as.Date("2021-08-30"))
+global_rec <- global_rec %>%
+  filter(date <= as.Date("2021-08-30"))
+```
+
+Combine the 2 files provided by merging the country in which they occurred, before we begin to clean the data up. The countries will need to be grouped together first to make the process more streamline. I am also filtering out any value that might equal to 0.
+
+```{r}
+combined <- left_join(global_inf, global_rec, by = "date")
+
+combined <- combined %>%
+  filter(global_inf > 0 & global_rec > 0) 
+```
+
+# Plot the data to show the ratio of people recovered versus infected for each country
+
+```{r}
+ggplot(combined, aes(x = date)) +
+  geom_line(aes(y = global_inf, color = "Infected"), size = 1) +
+  geom_line(aes(y = global_rec, color = "Recovered"), size = 1) +
+  labs(title = "Global COVID-19 Infections and Recoveries Over Time", x = "Date", y = "Cases", color = "Legend") +
+  scale_x_date(date_labels = "%b, %Y", date_breaks = "1 month") +
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",", scientific = FALSE)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+An interesting trend seen from this graph is that at December of 2020, there was a dip in the cases recovered. This aligns with the theory that viral infections are worse during the Winter, so this meant that less people recovered as a result unfortunately.
+
+# Analysis of the month where the ratio of recoveries versus infections is the lowest
+
+In other words, this is the month at which there is the least amount of recoveries per infection
+
+```{r}
+combined <- combined %>%
+  mutate(month_year = floor_date(date, "month"))
+
+combined <- combined %>%
+  mutate(ratio = ifelse(global_inf != 0, global_rec / global_inf, NA))
+
+ratio <- combined %>%
+  group_by(month_year) %>%
+  summarize(ratio = ifelse(sum(global_inf, na.rm = TRUE) != 0, sum(global_rec, na.rm = TRUE) / sum(global_inf, na.rm = TRUE), NA)) %>%
+  ungroup()
+
+ratio <- ratio %>%
+  select(month_year, ratio)
+
+options(tibble.print_max = nrow(ratio))
+print(ratio, n = nrow(ratio))
+```
+
+I found it really interesting that there are different ratios for each of the months, so I will also show a visual of this so we can dig deeper into it rather than just looking at numbers.
+
+```{r}
+ggplot(combined, aes(x = date)) +
+  geom_line(aes(y = ratio, color = "Ratio"), size = 1) +
+  labs(title = "Ratio of Recovered Vs. Infected Individuals Over Time", x = "Date", y = "Ratio", color = "Legend") +
+  scale_x_date(date_labels = "%b, %Y", date_breaks = "1 month") + 
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",", scientific = FALSE)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+There is a large spike in recovery seen for March of 2020 which is when the pandemic started. It is interesting to see how there was suddenly a large decrease in recoveries immediately after. This is likely when infection began to spread exponentially worldwide.
+
+# Model for ratio of recovered vs. infected individuals over time. Then, graph it compared to actual data
+
+```{r}
+ratio <- as.data.frame(ratio)
+
+
+colnames(ratio)[colnames(ratio) == "ratio"] <- "ratio_value"
+
+ratio$ratio_value <- as.numeric(ratio$ratio_value)
+
+mod <- lm(ratio_value ~ month_year, data = ratio)
+ratio <- ratio %>%
+  mutate(pred = predict(mod, newdata = ratio))
+
+ggplot(ratio, aes(x = month_year, y = ratio_value)) +
+  geom_point() +
+  geom_line(aes(y = pred), color = "blue") +
+  scale_x_date(date_labels = "%b, %Y", date_breaks = "1 month") +
+  labs(title = "Model Ratio of Recovered to Infected Over Time", x = "Month", y = "Ratio") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+The data supports that as the infection went on over time, the rate of recovery also increased which is why the ratio is increasing.
+
+# Conclusion
+
+Overall, the rate of infection greatly increased in the beginning of the pandemic in 2020, and the rate of recoveries rose along with it as advancements were in preventing the spread of infections. This makes sense as scientists began to find ways to prevent the spread as well as ways to recover from the infection, if applicable. Although the actual data does not show a linear progression in the ratio, the trend generally goes upwards towards more individuals recovering who are infected. As time went on to the present (2025), the state of the viral infection was no longer considered to be pandemic-level, meaning the ratio is significantly higher now than it was 5 years ago. This is supported by the trend seen in the graph for the model produced. Upon investigating when vaccines started becoming widely available to the public, it was December of 2020 which supports the decrease in cases after that point as well, since individuals started gaining immunity to the virus. It is interesting to see how the data began to trend once vaccines began to be administered to the general public. If there was more data available after 2021 for the amount of people recovering globally, there would likely be a great decline in the rate of infection as well as an increase in the ratio for recovered versus infected individuals globally.
+
+# Potential Sources of Bias
+
+Potential sources of bias include the recovery per country, since some countries are more medically advanced than others. I chose to disregard country as a whole so there would be no personal bias in seeing those trends, since I am more interested in the bigger picture of global infection and recovery rates. Since some countries have more or less strict guidelines for vaccine approval, I found that I had a source of personal bias in predicting whether countries with less strict guidelines had an increase in recovery rates per infection. Therefore, by disregarding all data related to countries, I wanted to show that even looking at numbers globally can show significant trends. Since travel to other countries was not completely stopped, there is likely still spread of infection occurring from public exposure, so the infection rate likely equals out in this case.
